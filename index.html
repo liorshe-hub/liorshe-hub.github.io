@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sudoku — Play & Fill</title>
+<style>
+  :root{--bg:#0b0b10;--panel:#141421;--ink:#e9e9f2;--muted:#a3a3b2;--grid:#2a2a44;--given:#1b1b2d;--accent:#7c3aed;--ok:#10b981;--bad:#ef4444}
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 800px at 10% -10%,#1e1b4b22,transparent),var(--bg);color:var(--ink);font:16px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Inter,Roboto}
+  .wrap{max-width:980px;margin:36px auto;padding:0 16px}
+  h1{margin:0 0 8px;font-size:28px;font-weight:800}
+  p.sub{margin:0 0 16px;color:var(--muted)}
+  .board{display:grid;grid-template-columns:repeat(9,1fr);gap:0;border:2px solid var(--grid);border-radius:10px;overflow:hidden;background:#0d0d17}
+  .cell{position:relative;border:1px solid #1e1e32}
+  .cell:nth-child(3n+1){border-left-width:2px}
+  .cell:nth-child(9n){border-right-width:2px}
+  .cell input{width:100%;height:0;padding-top:100%;border:0;background:transparent;color:var(--ink);text-align:center;font:700 20px/1 ui-monospace,Consolas,Menlo;outline:none}
+  .cell input::selection{background:#7c3aed66}
+  .cell input:focus{box-shadow:inset 0 0 0 2px #7c3aed88}
+  .given{background:var(--given)}
+  .given input{color:#c8c8ee}
+  .rowSep{}
+  .rowSep:nth-child(n+19):nth-child(-n+27),
+  .rowSep:nth-child(n+46):nth-child(-n+54){border-top-width:2px}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}
+  button{cursor:pointer;border:1px solid #2e2e4e;background:linear-gradient(180deg,#1a1a2b,#121221);color:var(--ink);padding:10px 14px;border-radius:12px;font-weight:700}
+  button:hover{border-color:#3b3b5e;transform:translateY(-1px)}
+  .accent{background:linear-gradient(180deg,#6d28d9,#4c1d95);border-color:#6d28d9}
+  .ghost{background:transparent}
+  .status{margin-left:auto;font-weight:800}
+  .good{color:var(--ok)} .bad{color:var(--bad)}
+  .panel{background:var(--panel);border:1px solid #26263e;padding:16px;border-radius:14px;margin-top:12px}
+  .mini{color:var(--muted);font-size:14px}
+  .badCell{background:#3b0f1a !important}
+  .okCell{background:#0f2e22 !important}
+  .numPad{display:grid;grid-template-columns:repeat(9,32px);gap:6px}
+  .numPad button{padding:6px 0;border-radius:10px}
+  @media (min-width:720px){
+    .gridWrap{display:grid;grid-template-columns:1fr 280px;gap:16px;align-items:start}
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Sudoku — Fill in the Missing Numbers</h1>
+    <p class="sub">Some cells are pre-filled as clues. Click a cell and use your keyboard or the number pad. Use <b>Check</b> to validate, <b>Clear</b> to reset your entries, or <b>Solve</b> if you’re stuck.</p>
+
+    <div class="gridWrap">
+      <div>
+        <div id="board" class="board"></div>
+        <div class="controls">
+          <button id="new" class="accent">New Puzzle</button>
+          <button id="check">Check</button>
+          <button id="clear" class="ghost">Clear</button>
+          <button id="solve" class="ghost">Solve</button>
+          <span id="status" class="status"></span>
+        </div>
+        <div class="panel mini">
+          Difficulty hides a percentage of cells from a valid grid. Generate from one of the built‑in solved boards.
+          <div class="controls" style="margin:10px 0 0">
+            <label>Hide %: <input id="hidePct" type="range" min="45" max="80" value="60" step="1"> <span id="hideLbl">60%</span></label>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div style="margin-bottom:8px;font-weight:800">Number Pad</div>
+        <div class="numPad" id="numPad"></div>
+        <div class="mini" style="margin-top:12px">Shortcuts: <b>Backspace</b> to erase, <b>Arrow keys</b> to move.</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ---------- Utilities ----------
+const $ = s => document.querySelector(s);
+const boardEl = $('#board');
+const statusEl = $('#status');
+const hidePctEl = $('#hidePct');
+const hideLbl = $('#hideLbl');
+hidePctEl.oninput = () => hideLbl.textContent = hidePctEl.value + '%';
+
+// Example solved boards (valid solutions). We'll hide cells to create a puzzle.
+const SOLUTIONS = [
+  "534678912672195348198342567859761423426853791713924856961537284287419635345286179",
+  "986247351241953867735618942398425716172869534564731289457196328623584179819372465",
+  "417369825632158947985247316826593174791824563354716289173982654568431792249675831"
+];
+
+let grid = [];       // current numbers (0 for blank)
+let givenMask = [];  // true if given (locked)
+let solution = [];   // the underlying solved grid (for check/solve)
+let active = null;   // active cell [r,c]
+
+function makeEmpty(){ return Array.from({length:9},()=>Array(9).fill(0)); }
+function deepCopy(A){ return A.map(r=>r.slice()); }
+
+function render(){
+  boardEl.innerHTML = '';
+  for(let r=0;r<9;r++){
+    for(let c=0;c<9;c++){
+      const idx = r*9+c;
+      const cell = document.createElement('div');
+      cell.className = 'cell rowSep' + (givenMask[r][c] ? ' given' : '');
+      const input = document.createElement('input');
+      input.setAttribute('inputmode','numeric');
+      input.setAttribute('maxlength','1');
+      input.value = grid[r][c] || '';
+      input.onfocus = ()=> active=[r,c];
+      input.oninput = e=>{
+        const v = e.target.value.replace(/[^1-9]/g,'');
+        e.target.value = v;
+        if (givenMask[r][c]) { e.target.value = grid[r][c]; return; }
+        grid[r][c] = v? +v : 0;
+        clearHighlights();
+      };
+      input.onkeydown = e=>{
+        const k=e.key;
+        if (k==='Backspace'||k==='Delete'){ if (!givenMask[r][c]) grid[r][c]=0; e.target.value=''; return; }
+        if (k.startsWith('Arrow')){
+          const dr = (k==='ArrowUp'?-1:k==='ArrowDown'?1:0);
+          const dc = (k==='ArrowLeft'?-1:k==='ArrowRight'?1:0);
+          const nr = Math.min(8,Math.max(0,r+dr));
+          const nc = Math.min(8,Math.max(0,c+dc));
+          const idx2 = nr*9+nc;
+          boardEl.children[idx2].querySelector('input').focus();
+          e.preventDefault(); return;
+        }
+      };
+      cell.appendChild(input);
+      boardEl.appendChild(cell);
+    }
+  }
+}
+
+function clearHighlights(){
+  [...boardEl.children].forEach(el=>el.classList.remove('badCell','okCell'));
+  statusEl.textContent='';
+  statusEl.className='status';
+}
+
+function isValid(g, r,c,v){
+  for(let i=0;i<9;i++){
+    if (g[r][i]===v && i!==c) return false;
+    if (g[i][c]===v && i!==r) return false;
+  }
+  const br=Math.floor(r/3)*3, bc=Math.floor(c/3)*3;
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++){
+    const rr=br+i, cc=bc+j;
+    if ((rr!==r||cc!==c) && g[rr][cc]===v) return false;
+  }
+  return true;
+}
+
+function findEmpty(g){
+  for(let r=0;r<9;r++) for(let c=0;c<9;c++){
+    if (g[r][c]===0) return [r,c];
+  }
+  return null;
+}
+function solve(g){
+  const spot=findEmpty(g);
+  if(!spot) return true;
+  const [r,c]=spot;
+  for(let v=1;v<=9;v++){
+    if (isValid(g,r,c,v)){
+      g[r][c]=v;
+      if (solve(g)) return true;
+      g[r][c]=0;
+    }
+  }
+  return false;
+}
+
+function newPuzzle(hidePercent=60){
+  // pick a solved board, then hide some cells
+  const s = SOLUTIONS[Math.floor(Math.random()*SOLUTIONS.length)];
+  solution = Array.from({length:9},(_,r)=>Array.from({length:9},(_,c)=>+s[r*9+c]));
+  grid = deepCopy(solution);
+  givenMask = Array.from({length:9},()=>Array(9).fill(true));
+  // Hide approximately P% cells
+  const total = 81;
+  const toHide = Math.round(total*hidePercent/100);
+  const positions = Array.from({length:81},(_,i)=>i);
+  for(let i=positions.length-1;i>0;i--){ // shuffle
+    const j=Math.floor(Math.random()*(i+1)); [positions[i],positions[j]]=[positions[j],positions[i]];
+  }
+  for(let k=0;k<toHide;k++){
+    const idx = positions[k];
+    const r = Math.floor(idx/9), c = idx%9;
+    grid[r][c]=0;
+    givenMask[r][c]=false;
+  }
+  // any remaining true are givens; false are editable
+  render();
+  statusEl.textContent='New puzzle ready'; statusEl.className='status';
+}
+
+function checkBoard(){
+  clearHighlights();
+  let ok=true;
+  for(let r=0;r<9;r++){
+    for(let c=0;c<9;c++){
+      const v = grid[r][c];
+      const el = boardEl.children[r*9+c];
+      if (v===0){ ok=false; continue; }
+      if (!isValid(grid,r,c,v)){ el.classList.add('badCell'); ok=false; }
+    }
+  }
+  if (ok){
+    statusEl.textContent='Looks valid!';
+    statusEl.className='status good';
+    // fully solved?
+    const done = grid.every(row=>row.every(x=>x!==0));
+    if (done) statusEl.textContent='✅ Completed!';
+  } else {
+    statusEl.textContent='Conflicts found';
+    statusEl.className='status bad';
+  }
+}
+
+function clearUserEntries(){
+  for(let r=0;r<9;r++) for(let c=0;c<9;c++){
+    if (!givenMask[r][c]) grid[r][c]=0;
+  }
+  render(); clearHighlights();
+}
+
+function solveNow(){
+  const attempt = deepCopy(grid);
+  if (solve(attempt)){
+    grid = attempt;
+    render();
+    statusEl.textContent='Solved'; statusEl.className='status good';
+  } else {
+    statusEl.textContent='Unsolvable'; statusEl.className='status bad';
+  }
+}
+
+// Number pad
+const numPad = $('#numPad');
+for(let n=1;n<=9;n++){
+  const b=document.createElement('button'); b.textContent=n;
+  b.onclick=()=>{
+    if (!active) return;
+    const [r,c]=active;
+    if (givenMask[r][c]) return;
+    grid[r][c]=n; 
+    const el = boardEl.children[r*9+c].querySelector('input');
+    el.value=n; clearHighlights();
+  };
+  numPad.appendChild(b);
+}
+const er=document.createElement('button'); er.textContent='⌫';
+er.onclick=()=>{
+  if (!active) return;
+  const [r,c]=active;
+  if (givenMask[r][c]) return;
+  grid[r][c]=0;
+  const el = boardEl.children[r*9+c].querySelector('input');
+  el.value=''; clearHighlights();
+};
+numPad.appendChild(er);
+
+// Buttons
+$('#new').onclick=()=>newPuzzle(+hidePctEl.value);
+$('#check').onclick=checkBoard;
+$('#clear').onclick=clearUserEntries;
+$('#solve').onclick=solveNow;
+
+// Init
+hideLbl.textContent = hidePctEl.value + '%';
+// create first puzzle
+newPuzzle(+hidePctEl.value);
+</script>
+</body>
+</html>
